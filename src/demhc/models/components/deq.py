@@ -369,7 +369,9 @@ def deq_forward_with_grad(
     # Now we need to set up the backward pass
     # The trick: create a "fake" computation graph that has the right gradient
 
-    if x0.requires_grad or any(p.requires_grad for p in f.parameters() if hasattr(f, "parameters")):
+    # Check if we need gradients
+    f_has_params = hasattr(f, "parameters") and any(p.requires_grad for p in f.parameters())
+    if x0.requires_grad or f_has_params:
         # Re-run f at the fixed point to get a computation graph
         x_star = x_star_detached.detach().requires_grad_(True)
         fx_star = f(x_star)

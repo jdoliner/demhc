@@ -178,7 +178,7 @@ class DEQmHCModel(nn.Module):
         self.pos_emb = nn.Embedding(config.max_seq_len, config.hidden_dim)
 
         # Lane expansion (1 -> k lanes)
-        self.lane_expander = LaneExpander(config.mhc.num_lanes)
+        self.lane_expander = LaneExpander(config.mhc.num_lanes, config.hidden_dim)
 
         # DEQ-mHC layers
         self.layers = nn.ModuleList([

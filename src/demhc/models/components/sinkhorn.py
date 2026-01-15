@@ -44,6 +44,7 @@ def project_to_birkhoff(
     """Project unconstrained logits to a doubly stochastic matrix.
 
     This is the full pipeline: sigmoid (non-negativity) -> Sinkhorn (doubly stochastic).
+    Uses straight-through estimator for better gradient flow.
 
     Args:
         logits: Unconstrained learnable parameters of shape (..., n, n).
@@ -55,8 +56,13 @@ def project_to_birkhoff(
     """
     # Apply sigmoid for non-negativity (values in (0, 1))
     A = torch.sigmoid(logits)
+    
     # Project to Birkhoff polytope
-    return sinkhorn_knopp(A, num_iters=num_iters, eps=eps)
+    A_projected = sinkhorn_knopp(A, num_iters=num_iters, eps=eps)
+    
+    # Straight-through estimator: forward uses projected, backward uses pre-projection
+    # This helps gradients flow through even when Sinkhorn "flattens" them
+    return A + (A_projected - A).detach()
 
 
 def project_to_simplex(logits: Tensor, dim: int = -1) -> Tensor:

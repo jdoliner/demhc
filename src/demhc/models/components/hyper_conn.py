@@ -31,8 +31,13 @@ class HyperConnection(nn.Module):
         self.sinkhorn_eps = sinkhorn_eps
 
         # Learnable mixing parameters (unconstrained logits)
-        # Initialize to zeros so initial mixing matrix is uniform
-        self.mix_logits = nn.Parameter(torch.zeros(num_lanes, num_lanes))
+        # Initialize near-identity: each lane primarily keeps its own value
+        # but can learn to mix with others. The diagonal bias encourages
+        # each lane to maintain its identity initially.
+        init_logits = torch.zeros(num_lanes, num_lanes)
+        init_logits += 2.0 * torch.eye(num_lanes)  # Bias toward identity
+        init_logits += 0.1 * torch.randn(num_lanes, num_lanes)  # Small noise
+        self.mix_logits = nn.Parameter(init_logits)
 
     def get_mixing_matrix(self) -> Tensor:
         """Compute the doubly stochastic mixing matrix.
@@ -79,8 +84,8 @@ class LaneAggregator(nn.Module):
         self.num_lanes = num_lanes
 
         # Learnable aggregation weights (unconstrained logits)
-        # Initialize to zeros so initial weights are uniform
-        self.agg_logits = nn.Parameter(torch.zeros(num_lanes))
+        # Initialize with small random values to break symmetry
+        self.agg_logits = nn.Parameter(0.1 * torch.randn(num_lanes))
 
     def get_weights(self) -> Tensor:
         """Get the aggregation weights (probability simplex).
@@ -112,15 +117,23 @@ class LaneAggregator(nn.Module):
 class LaneExpander(nn.Module):
     """Expands a single input stream into k lanes.
 
-    Simply replicates the input across all lanes (no learnable parameters).
+    Each lane gets a learned linear projection of the input, giving
+    each lane a different "view" of the data from the start.
     """
 
-    def __init__(self, num_lanes: int):
+    def __init__(self, num_lanes: int, hidden_dim: int):
         super().__init__()
         self.num_lanes = num_lanes
+        self.hidden_dim = hidden_dim
+
+        # Each lane gets its own projection (initialized near-identity)
+        self.lane_projections = nn.Parameter(
+            torch.eye(hidden_dim).unsqueeze(0).expand(num_lanes, -1, -1).clone()
+            + 0.01 * torch.randn(num_lanes, hidden_dim, hidden_dim)
+        )
 
     def forward(self, x: Tensor) -> Tensor:
-        """Expand input to k lanes.
+        """Expand input to k lanes with learned projections.
 
         Args:
             x: Input tensor of shape (batch, seq, hidden_dim)
@@ -128,5 +141,7 @@ class LaneExpander(nn.Module):
         Returns:
             Expanded output of shape (batch, seq, num_lanes, hidden_dim)
         """
-        # (batch, seq, hidden) -> (batch, seq, 1, hidden) -> (batch, seq, k, hidden)
-        return x.unsqueeze(-2).expand(-1, -1, self.num_lanes, -1)
+        # x: (batch, seq, hidden)
+        # lane_projections: (num_lanes, hidden, hidden)
+        # output: (batch, seq, num_lanes, hidden)
+        return torch.einsum("bsh, khd -> bskd", x, self.lane_projections)
