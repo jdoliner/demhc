@@ -402,9 +402,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=None, help="Dropout rate")
 
     # DEQ settings
-    parser.add_argument("--anderson-m", type=int, default=None, help="Anderson acceleration history size")
-    parser.add_argument("--deq-max-iters", type=int, default=None, help="Max DEQ iterations")
-    parser.add_argument("--deq-tol", type=float, default=None, help="DEQ convergence tolerance")
+    parser.add_argument("--anderson-m", type=int, default=None, help="Anderson acceleration history size (default: 3)")
+    parser.add_argument("--deq-max-iters", type=int, default=None, help="Max DEQ forward iterations (default: 8)")
+    parser.add_argument("--deq-tol", type=float, default=None, help="DEQ convergence tolerance (default: 0.15)")
+    parser.add_argument("--deq-beta", type=float, default=None, help="Anderson mixing parameter (default: 1.0)")
+    parser.add_argument("--deq-backward-iters", type=int, default=None, help="Max DEQ backward iterations (default: 8)")
+    parser.add_argument("--deq-backward-tol", type=float, default=None, help="DEQ backward tolerance (default: 0.15)")
 
     # mHC settings
     parser.add_argument("--num-lanes", type=int, default=None, help="Number of lanes for mHC")
@@ -462,6 +465,12 @@ def main() -> None:
         config.model.deq.max_iters = args.deq_max_iters
     if args.deq_tol:
         config.model.deq.tol = args.deq_tol
+    if args.deq_beta:
+        config.model.deq.beta = args.deq_beta
+    if args.deq_backward_iters:
+        config.model.deq.implicit_diff_max_iters = args.deq_backward_iters
+    if args.deq_backward_tol:
+        config.model.deq.implicit_diff_tol = args.deq_backward_tol
 
     if args.num_lanes:
         config.model.mhc.num_lanes = args.num_lanes
@@ -489,6 +498,18 @@ def main() -> None:
     print(f"Model: {config.model_type}")
     print(f"Size: {config.size}")
     print(f"Output: {config.output_dir}/{config.name}")
+    if config.model_type == "demhc":
+        print("-" * 60)
+        print("DEQ Settings:")
+        print(f"  max_iters: {config.model.deq.max_iters}")
+        print(f"  tol: {config.model.deq.tol}")
+        print(f"  anderson_m: {config.model.deq.anderson_m}")
+        print(f"  beta: {config.model.deq.beta}")
+        print(f"  backward_iters: {config.model.deq.implicit_diff_max_iters}")
+        print(f"  backward_tol: {config.model.deq.implicit_diff_tol}")
+        print(f"mHC Settings:")
+        print(f"  num_lanes: {config.model.mhc.num_lanes}")
+        print(f"  sinkhorn_iters: {config.model.mhc.sinkhorn_iters}")
     print("=" * 60)
 
     # Run training

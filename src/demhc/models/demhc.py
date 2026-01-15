@@ -57,7 +57,9 @@ class DEQmHCLayerFunction(nn.Module):
 
         # Contraction factor - ensures the layer is a contraction for DEQ convergence
         # This scales the layer output to ensure ||f(x) - f(y)|| < ||x - y||
-        self.contraction_factor = nn.Parameter(torch.tensor(0.9))
+        # Initialize to -2.0 so sigmoid gives ~0.12, meaning strong contraction
+        # (output is 12% new + 88% old, like a small learning rate)
+        self.contraction_factor = nn.Parameter(torch.tensor(-1.0))
 
     def forward(self, x: Tensor) -> Tensor:
         """

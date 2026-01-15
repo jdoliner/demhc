@@ -9,14 +9,14 @@ class DEQConfig:
     """Configuration for Deep Equilibrium solver."""
 
     solver: Literal["anderson", "fixed_point"] = "anderson"
-    anderson_m: int = 5  # History size for Anderson acceleration
-    max_iters: int = 30  # Maximum forward iterations
-    tol: float = 1e-5  # Convergence tolerance (relative residual)
+    anderson_m: int = 3  # History size for Anderson acceleration (smaller = faster)
+    max_iters: int = 8  # Maximum forward iterations (reduced for speed)
+    tol: float = 0.15  # Convergence tolerance (relaxed for practical training)
     beta: float = 1.0  # Mixing parameter for Anderson
 
     # Implicit differentiation settings
-    implicit_diff_max_iters: int = 30  # Max iterations for backward solve
-    implicit_diff_tol: float = 1e-5  # Tolerance for backward solve
+    implicit_diff_max_iters: int = 8  # Max iterations for backward solve
+    implicit_diff_tol: float = 0.15  # Tolerance for backward solve
 
 
 @dataclass
@@ -139,7 +139,7 @@ class ExperimentConfig:
                 ffn_mult=4.0,
                 max_seq_len=512,
                 dropout=0.1,
-                deq=DEQConfig(anderson_m=5, max_iters=30, tol=1e-5),
+                deq=DEQConfig(),  # Use relaxed defaults for faster training
                 mhc=mHCConfig(num_lanes=6, sinkhorn_iters=10),
             ),
         )
@@ -175,7 +175,7 @@ class ExperimentConfig:
                 ffn_mult=4.0,
                 max_seq_len=512,
                 dropout=0.1,
-                deq=DEQConfig(anderson_m=5, max_iters=30, tol=1e-5),
+                deq=DEQConfig(),  # Use relaxed defaults for faster training
                 mhc=mHCConfig(num_lanes=12, sinkhorn_iters=10),
             ),
         )

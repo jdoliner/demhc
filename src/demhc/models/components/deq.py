@@ -94,7 +94,7 @@ def anderson_acceleration(
             # Using normal equations: (F_diff^T F_diff) gamma = F_diff^T (-F_last)
             F_last = F_stack[:, -1, :]  # (batch, features)
 
-            # Cast to float32 for linear algebra (bfloat16 not supported)
+            # Cast to float32 for linear algebra (bfloat16 not supported by linalg.solve)
             F_diff_f32 = F_diff.float()
             F_last_f32 = F_last.float()
 
@@ -103,17 +103,12 @@ def anderson_acceleration(
             # Add regularization for stability
             FtF = FtF + 1e-6 * torch.eye(mk - 1, device=device, dtype=torch.float32).unsqueeze(0)
 
-            # (batch, mk-1)
-            Ftf = torch.bmm(F_diff_f32, (-F_last_f32).unsqueeze(-1)).squeeze(-1)
+            # (batch, mk-1) - ensure float32
+            Ftf = torch.bmm(F_diff_f32, (-F_last_f32).unsqueeze(-1)).squeeze(-1).float()
 
-            # Solve for gamma
-            try:
-                gamma = torch.linalg.solve(FtF, Ftf)  # (batch, mk-1)
-            except RuntimeError:
-                # Fall back to pseudo-inverse if solve fails
-                gamma = torch.bmm(
-                    torch.linalg.pinv(FtF), Ftf.unsqueeze(-1)
-                ).squeeze(-1)
+            # Solve for gamma using pseudo-inverse (more robust and torch.compile friendly)
+            # gamma = (F_diff^T F_diff)^-1 F_diff^T (-F_last)
+            gamma = torch.linalg.lstsq(FtF, Ftf.unsqueeze(-1)).solution.squeeze(-1)
 
             # Cast alpha back to original dtype
             alpha = torch.cat([gamma, 1.0 - gamma.sum(dim=-1, keepdim=True)], dim=-1)
