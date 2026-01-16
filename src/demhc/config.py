@@ -65,6 +65,7 @@ class TrainConfig:
     beta1: float = 0.9
     beta2: float = 0.95
     gradient_clip: float = 1.0
+    mhc_lr_mult: float = 30.0  # Learning rate multiplier for mHC params
 
     # Schedule
     warmup_steps: int = 1000

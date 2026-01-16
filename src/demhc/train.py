@@ -68,17 +68,27 @@ def create_model(config: ExperimentConfig, device: torch.device) -> nn.Module:
 def create_optimizer_and_scheduler(
     model: nn.Module,
     config: TrainConfig,
+    mhc_lr_mult: float = 1.0,
 ) -> tuple[AdamW, torch.optim.lr_scheduler.LRScheduler]:
     """Create optimizer and learning rate scheduler."""
-    # Separate weight decay for different parameter types
+    # Separate parameter groups:
+    # 1. mHC parameters (mixing matrices, lane projections) - may need higher LR
+    # 2. Regular params with weight decay
+    # 3. Regular params without weight decay (biases, LayerNorm)
+
+    mhc_params = []
     decay_params = []
     no_decay_params = []
 
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
+
+        # mHC-specific parameters
+        if "mix_logits" in name or "agg_logits" in name or "lane_projection" in name:
+            mhc_params.append(param)
         # Don't apply weight decay to biases and LayerNorm
-        if "bias" in name or "ln" in name or "LayerNorm" in name:
+        elif "bias" in name or "ln" in name or "LayerNorm" in name:
             no_decay_params.append(param)
         else:
             decay_params.append(param)
@@ -87,6 +97,16 @@ def create_optimizer_and_scheduler(
         {"params": decay_params, "weight_decay": config.weight_decay},
         {"params": no_decay_params, "weight_decay": 0.0},
     ]
+
+    # Add mHC params with potentially higher learning rate
+    if mhc_params:
+        optimizer_groups.append(
+            {
+                "params": mhc_params,
+                "weight_decay": 0.0,  # No weight decay for mHC params
+                "lr": config.learning_rate * mhc_lr_mult,
+            }
+        )
 
     optimizer = AdamW(
         optimizer_groups,
@@ -227,7 +247,8 @@ def train(config: ExperimentConfig, resume: str | None = None) -> None:
         model = torch.compile(model)
 
     # Create optimizer and scheduler
-    optimizer, scheduler = create_optimizer_and_scheduler(model, config.train)
+    mhc_lr_mult = config.train.mhc_lr_mult if config.model_type == "demhc" else 1.0
+    optimizer, scheduler = create_optimizer_and_scheduler(model, config.train, mhc_lr_mult)
 
     # Resume from checkpoint if specified
     start_step = 0
@@ -278,9 +299,7 @@ def train(config: ExperimentConfig, resume: str | None = None) -> None:
         loss.backward()
 
         # Gradient clipping
-        grad_norm = torch.nn.utils.clip_grad_norm_(
-            model.parameters(), config.train.gradient_clip
-        )
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.gradient_clip)
 
         # Optimizer step
         optimizer.step()
@@ -402,22 +421,51 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=None, help="Dropout rate")
 
     # DEQ settings
-    parser.add_argument("--anderson-m", type=int, default=None, help="Anderson acceleration history size (default: 3)")
-    parser.add_argument("--deq-max-iters", type=int, default=None, help="Max DEQ forward iterations (default: 8)")
-    parser.add_argument("--deq-tol", type=float, default=None, help="DEQ convergence tolerance (default: 0.15)")
-    parser.add_argument("--deq-beta", type=float, default=None, help="Anderson mixing parameter (default: 1.0)")
-    parser.add_argument("--deq-backward-iters", type=int, default=None, help="Max DEQ backward iterations (default: 8)")
-    parser.add_argument("--deq-backward-tol", type=float, default=None, help="DEQ backward tolerance (default: 0.15)")
+    parser.add_argument(
+        "--anderson-m",
+        type=int,
+        default=None,
+        help="Anderson acceleration history size (default: 3)",
+    )
+    parser.add_argument(
+        "--deq-max-iters", type=int, default=None, help="Max DEQ forward iterations (default: 8)"
+    )
+    parser.add_argument(
+        "--deq-tol", type=float, default=None, help="DEQ convergence tolerance (default: 0.15)"
+    )
+    parser.add_argument(
+        "--deq-beta", type=float, default=None, help="Anderson mixing parameter (default: 1.0)"
+    )
+    parser.add_argument(
+        "--deq-backward-iters",
+        type=int,
+        default=None,
+        help="Max DEQ backward iterations (default: 8)",
+    )
+    parser.add_argument(
+        "--deq-backward-tol",
+        type=float,
+        default=None,
+        help="DEQ backward tolerance (default: 0.15)",
+    )
 
     # mHC settings
     parser.add_argument("--num-lanes", type=int, default=None, help="Number of lanes for mHC")
-    parser.add_argument("--sinkhorn-iters", type=int, default=None, help="Sinkhorn-Knopp iterations")
+    parser.add_argument(
+        "--sinkhorn-iters", type=int, default=None, help="Sinkhorn-Knopp iterations"
+    )
 
     # Training settings
     parser.add_argument("--batch-size", type=int, default=None, help="Batch size")
     parser.add_argument("--learning-rate", type=float, default=None, help="Learning rate")
     parser.add_argument("--max-steps", type=int, default=None, help="Maximum training steps")
     parser.add_argument("--warmup-steps", type=int, default=None, help="Warmup steps")
+    parser.add_argument(
+        "--mhc-lr-mult",
+        type=float,
+        default=None,
+        help="Learning rate multiplier for mHC params (default: 30.0)",
+    )
 
     # Other settings
     parser.add_argument("--output-dir", type=str, default="outputs", help="Output directory")
@@ -485,6 +533,8 @@ def main() -> None:
         config.train.max_steps = args.max_steps
     if args.warmup_steps:
         config.train.warmup_steps = args.warmup_steps
+    if args.mhc_lr_mult:
+        config.train.mhc_lr_mult = args.mhc_lr_mult
 
     config.output_dir = args.output_dir
     config.seed = args.seed
@@ -510,6 +560,7 @@ def main() -> None:
         print(f"mHC Settings:")
         print(f"  num_lanes: {config.model.mhc.num_lanes}")
         print(f"  sinkhorn_iters: {config.model.mhc.sinkhorn_iters}")
+        print(f"  lr_mult: {config.train.mhc_lr_mult}")
     print("=" * 60)
 
     # Run training

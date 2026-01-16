@@ -315,8 +315,8 @@ class DEQSolver(nn.Module):
             Tuple of (fixed_point, stats).
         """
         if self.training:
-            # Use custom autograd for implicit differentiation
-            return deq_forward_with_grad(
+            # Use unrolled differentiation - simpler and works well for small iteration counts
+            return deq_forward_unrolled(
                 f,
                 x0,
                 solver=self.solver,
@@ -324,8 +324,6 @@ class DEQSolver(nn.Module):
                 max_iters=self.max_iters,
                 tol=self.tol,
                 beta=self.beta,
-                implicit_diff_max_iters=self.implicit_diff_max_iters,
-                implicit_diff_tol=self.implicit_diff_tol,
             )
         else:
             # During eval, just run the solver without custom backward
@@ -339,7 +337,7 @@ class DEQSolver(nn.Module):
                 )
 
 
-def deq_forward_with_grad(
+def deq_forward_unrolled(
     f: Callable[[Tensor], Tensor],
     x0: Tensor,
     solver: str = "anderson",
@@ -347,70 +345,17 @@ def deq_forward_with_grad(
     max_iters: int = 30,
     tol: float = 1e-5,
     beta: float = 1.0,
-    implicit_diff_max_iters: int = 30,
-    implicit_diff_tol: float = 1e-5,
+    **kwargs,  # Ignore implicit diff params
 ) -> tuple[Tensor, DEQStats]:
-    """Forward pass with implicit differentiation for training.
+    """Forward pass with unrolled differentiation.
 
-    This function handles the tricky part of combining the fixed-point solver
-    with proper gradient computation via the implicit function theorem.
+    Instead of implicit differentiation, we simply unroll the fixed-point
+    iterations and let autograd backprop through them. This is simpler and
+    works well when max_iters is small (< 20).
+
+    For larger iteration counts, consider using gradient checkpointing.
     """
-    # Run the forward solver (no grad needed for the solve itself)
-    with torch.no_grad():
-        if solver == "anderson":
-            x_star_detached, stats = anderson_acceleration(
-                f, x0, m=anderson_m, max_iters=max_iters, tol=tol, beta=beta
-            )
-        else:
-            x_star_detached, stats = simple_fixed_point(
-                f, x0, max_iters=max_iters, tol=tol, beta=beta
-            )
-
-    # Now we need to set up the backward pass
-    # The trick: create a "fake" computation graph that has the right gradient
-
-    # Check if we need gradients
-    f_has_params = hasattr(f, "parameters") and any(p.requires_grad for p in f.parameters())
-    if x0.requires_grad or f_has_params:
-        # Re-run f at the fixed point to get a computation graph
-        x_star = x_star_detached.detach().requires_grad_(True)
-        fx_star = f(x_star)
-
-        # The "implicit gradient" trick:
-        # At equilibrium, x* = f(x*), so we can write:
-        # x* = f(x*) - x* + x* = residual + x*
-        # The gradient of this w.r.t. theta involves solving (I - J)^{-1}
-
-        # We use a custom backward hook to implement this
-        def backward_hook(grad: Tensor) -> Tensor:
-            """Solve (I - J^T) v = grad via fixed-point iteration."""
-            v = grad.clone()
-            for _ in range(implicit_diff_max_iters):
-                with torch.enable_grad():
-                    x_for_grad = x_star_detached.detach().requires_grad_(True)
-                    fx_for_grad = f(x_for_grad)
-                    (Jt_v,) = torch.autograd.grad(
-                        fx_for_grad,
-                        x_for_grad,
-                        grad_outputs=v,
-                        retain_graph=False,
-                        create_graph=False,
-                    )
-                v_new = grad + Jt_v
-                if (v_new - v).norm() / (v.norm() + 1e-8) < implicit_diff_tol:
-                    break
-                v = v_new
-            return v
-
-        # Create output with proper gradient
-        # x_star = x_star_detached + (fx_star - x_star).detach()
-        # This makes the gradient flow through fx_star
-        x_star_out = x_star_detached + (fx_star - x_star).detach()
-
-        # Register hook for implicit diff
-        if x_star_out.requires_grad:
-            x_star_out.register_hook(backward_hook)
-
-        return x_star_out, stats
+    if solver == "anderson":
+        return anderson_acceleration(f, x0, m=anderson_m, max_iters=max_iters, tol=tol, beta=beta)
     else:
-        return x_star_detached, stats
+        return simple_fixed_point(f, x0, max_iters=max_iters, tol=tol, beta=beta)
