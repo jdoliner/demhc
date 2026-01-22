@@ -87,7 +87,7 @@ class DEQmHCLayer(nn.Module):
     3. Returns the k output lanes
     """
 
-    def __init__(self, config: ModelConfig, layer_idx: int):
+    def __init__(self, config: ModelConfig, layer_idx: int, num_layers: int):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
@@ -102,16 +102,27 @@ class DEQmHCLayer(nn.Module):
         # The layer function that we find fixed point of
         self.layer_fn = DEQmHCLayerFunction(config)
 
-        # DEQ solver
+        # Compute per-layer tolerance if tol_start is specified
+        # Linearly interpolate from tol_start (layer 0) to tol (final layer)
+        if config.deq.tol_start is not None and num_layers > 1:
+            t = layer_idx / (num_layers - 1)  # 0 for first layer, 1 for last
+            layer_tol = config.deq.tol_start * (1 - t) + config.deq.tol * t
+        else:
+            layer_tol = config.deq.tol
+
+        # DEQ solver with layer-specific tolerance
         self.deq_solver = DEQSolver(
             solver=config.deq.solver,
             anderson_m=config.deq.anderson_m,
             max_iters=config.deq.max_iters,
-            tol=config.deq.tol,
+            tol=layer_tol,
             beta=config.deq.beta,
             implicit_diff_max_iters=config.deq.implicit_diff_max_iters,
             implicit_diff_tol=config.deq.implicit_diff_tol,
         )
+
+        # Store for logging
+        self.layer_tol = layer_tol
 
     def forward(self, lanes: Tensor) -> tuple[Tensor, DEQStats]:
         """
@@ -181,10 +192,12 @@ class DEQmHCModel(nn.Module):
         self.lane_expander = LaneExpander(config.mhc.num_lanes, config.hidden_dim)
 
         # DEQ-mHC layers
-        self.layers = nn.ModuleList([
-            DEQmHCLayer(config, layer_idx=i)
-            for i in range(config.num_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                DEQmHCLayer(config, layer_idx=i, num_layers=config.num_layers)
+                for i in range(config.num_layers)
+            ]
+        )
 
         # Lane aggregation (k -> 1)
         self.lane_aggregator = LaneAggregator(config.mhc.num_lanes)
@@ -287,7 +300,7 @@ class DEQmHCModel(nn.Module):
         """
         for _ in range(max_new_tokens):
             # Crop to max_seq_len if needed
-            idx_cond = input_ids[:, -self.config.max_seq_len:]
+            idx_cond = input_ids[:, -self.config.max_seq_len :]
 
             # Get logits for next token
             logits = self(idx_cond)

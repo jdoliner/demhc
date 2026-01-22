@@ -431,7 +431,16 @@ def parse_args() -> argparse.Namespace:
         "--deq-max-iters", type=int, default=None, help="Max DEQ forward iterations (default: 8)"
     )
     parser.add_argument(
-        "--deq-tol", type=float, default=None, help="DEQ convergence tolerance (default: 0.15)"
+        "--deq-tol",
+        type=float,
+        default=None,
+        help="DEQ convergence tolerance for final layer (default: 0.15)",
+    )
+    parser.add_argument(
+        "--deq-tol-start",
+        type=float,
+        default=None,
+        help="DEQ tolerance for layer 0; linearly interpolates to --deq-tol (default: None = uniform)",
     )
     parser.add_argument(
         "--deq-beta", type=float, default=None, help="Anderson mixing parameter (default: 1.0)"
@@ -513,6 +522,8 @@ def main() -> None:
         config.model.deq.max_iters = args.deq_max_iters
     if args.deq_tol:
         config.model.deq.tol = args.deq_tol
+    if args.deq_tol_start is not None:
+        config.model.deq.tol_start = args.deq_tol_start
     if args.deq_beta:
         config.model.deq.beta = args.deq_beta
     if args.deq_backward_iters:
@@ -553,6 +564,7 @@ def main() -> None:
         print("DEQ Settings:")
         print(f"  max_iters: {config.model.deq.max_iters}")
         print(f"  tol: {config.model.deq.tol}")
+        print(f"  tol_start: {config.model.deq.tol_start}")
         print(f"  anderson_m: {config.model.deq.anderson_m}")
         print(f"  beta: {config.model.deq.beta}")
         print(f"  backward_iters: {config.model.deq.implicit_diff_max_iters}")

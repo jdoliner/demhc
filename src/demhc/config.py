@@ -14,6 +14,10 @@ class DEQConfig:
     tol: float = 0.15  # Convergence tolerance (relaxed for practical training)
     beta: float = 1.0  # Mixing parameter for Anderson
 
+    # Per-layer tolerance scheduling: tol varies from tol_start (layer 0) to tol (final layer)
+    # If tol_start is None, use uniform tolerance (tol) for all layers
+    tol_start: float | None = None  # Starting tolerance for layer 0 (None = use tol for all)
+
     # Implicit differentiation settings
     implicit_diff_max_iters: int = 8  # Max iterations for backward solve
     implicit_diff_tol: float = 0.15  # Tolerance for backward solve
