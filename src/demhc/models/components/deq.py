@@ -126,10 +126,26 @@ def anderson_acceleration(
             # Simple fixed-point iteration for first step
             x = x + beta * residual
 
-    # Return last iterate if we didn't converge
+    # Compute final residual after the last iteration's update
+    # The loop checks convergence at the START of each iteration, so after the last
+    # x update we need to check once more to see if we actually converged
     x_full = x.reshape(batch_shape)
+    fx_full = f(x_full)
+    fx = fx_full.reshape(x.shape)
+
+    residual = fx - x
+    residual_norm = residual.norm(dim=-1).mean()
+    x_norm = x.norm(dim=-1).mean() + 1e-8
+    rel_residual = (residual_norm / x_norm).item()
+
+    # Check if we actually converged on the final iteration
+    if rel_residual < tol:
+        stats = DEQStats(forward_iters=max_iters, forward_residual=rel_residual)
+        return fx_full, stats
+
+    # Return last iterate if we didn't converge
     stats = DEQStats(forward_iters=max_iters, forward_residual=rel_residual)
-    return f(x_full), stats
+    return fx_full, stats
 
 
 def simple_fixed_point(
@@ -159,8 +175,18 @@ def simple_fixed_point(
 
         x = x + beta * residual
 
+    # Compute final residual after the last iteration's update
+    # The loop checks convergence at the START of each iteration, so after the last
+    # x update we need to check once more to see if we actually converged
+    fx = f(x)
+    residual = fx - x
+    residual_norm = residual.norm()
+    x_norm = x.norm() + 1e-8
+    rel_residual = (residual_norm / x_norm).item()
+
+    # Return with the correct residual (and the iteration count indicates max was reached)
     stats = DEQStats(forward_iters=max_iters, forward_residual=rel_residual)
-    return f(x), stats
+    return fx, stats
 
 
 class DEQFixedPoint(torch.autograd.Function):
