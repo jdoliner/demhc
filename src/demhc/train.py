@@ -34,6 +34,82 @@ def set_seed(seed: int) -> None:
     """Set random seeds for reproducibility."""
     random.seed(seed)
     torch.manual_seed(seed)
+
+
+def compute_annealing_values(
+    step: int,
+    config: ExperimentConfig,
+) -> tuple[float | None, float | None]:
+    """Compute annealed tolerance multiplier and alpha override for current step.
+
+    Args:
+        step: Current training step
+        config: Experiment configuration
+
+    Returns:
+        Tuple of (tolerance_multiplier, alpha_override)
+        - tolerance_multiplier: Multiplier for base tolerances (1.0 = no change), or None if no annealing
+        - alpha_override: Override alpha value, or None to use learned contraction factors
+    """
+    deq_config = config.model.deq
+
+    # Tolerance annealing: multiplier decreases from tol_anneal_start to 1.0
+    tol_multiplier = None
+    if deq_config.tol_anneal_start is not None:
+        anneal_steps = deq_config.tol_anneal_steps or config.train.warmup_steps
+        if step < anneal_steps:
+            # Linear interpolation from tol_anneal_start to 1.0
+            progress = step / anneal_steps
+            tol_multiplier = deq_config.tol_anneal_start * (1 - progress) + 1.0 * progress
+        else:
+            tol_multiplier = 1.0
+
+    # Alpha annealing: alpha increases from alpha_start to alpha_end
+    alpha_override = None
+    if deq_config.alpha_start is not None and deq_config.alpha_end is not None:
+        anneal_steps = deq_config.alpha_anneal_steps or config.train.warmup_steps
+        if step < anneal_steps:
+            # Linear interpolation from alpha_start to alpha_end
+            progress = step / anneal_steps
+            alpha_override = (
+                deq_config.alpha_start * (1 - progress) + deq_config.alpha_end * progress
+            )
+        else:
+            alpha_override = deq_config.alpha_end
+
+    return tol_multiplier, alpha_override
+
+
+def apply_annealing(
+    model: nn.Module,
+    step: int,
+    config: ExperimentConfig,
+) -> tuple[float | None, float | None]:
+    """Apply annealing schedules to the model.
+
+    Args:
+        model: The model (may be compiled)
+        step: Current training step
+        config: Experiment configuration
+
+    Returns:
+        Tuple of (tolerance_multiplier, alpha_override) that were applied
+    """
+    # Get the actual model (handle torch.compile wrapper)
+    actual_model = model._orig_mod if hasattr(model, "_orig_mod") else model
+
+    if not isinstance(actual_model, DEQmHCModel):
+        return None, None
+
+    tol_multiplier, alpha_override = compute_annealing_values(step, config)
+
+    if tol_multiplier is not None:
+        actual_model.set_tolerance_multiplier(tol_multiplier)
+
+    # Apply alpha override (None means use learned contraction factors)
+    actual_model.set_alpha_override(alpha_override)
+
+    return tol_multiplier, alpha_override
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
@@ -274,6 +350,9 @@ def train(config: ExperimentConfig, resume: str | None = None) -> None:
         input_ids = batch["input_ids"].to(device)
         labels = batch["labels"].to(device)
 
+        # Apply annealing schedules (tolerance and alpha)
+        tol_multiplier, alpha_override = apply_annealing(model, step, config)
+
         # Forward pass with mixed precision
         with torch.autocast(device_type="cuda", dtype=dtype):
             if isinstance(model, DEQmHCModel) or (
@@ -324,9 +403,18 @@ def train(config: ExperimentConfig, resume: str | None = None) -> None:
 
             # Log DEQ stats if available
             if stats is not None:
+                actual_model = model._orig_mod if hasattr(model, "_orig_mod") else model
                 layer_iters = [s.forward_iters for s in stats.layer_stats]
                 layer_residuals = [s.forward_residual for s in stats.layer_stats]
-                logger.log_deq_stats(layer_iters, layer_residuals, step=step)
+                layer_tolerances = [layer.layer_tol for layer in actual_model.layers]
+                logger.log_deq_stats(
+                    layer_iters,
+                    layer_residuals,
+                    step=step,
+                    layer_tolerances=layer_tolerances,
+                    tol_multiplier=tol_multiplier,
+                    alpha_override=alpha_override,
+                )
 
             progress_bar.set_postfix(
                 loss=f"{avg_loss:.4f}",
@@ -458,6 +546,38 @@ def parse_args() -> argparse.Namespace:
         help="DEQ backward tolerance (default: 0.15)",
     )
 
+    # DEQ annealing settings
+    parser.add_argument(
+        "--tol-anneal-start",
+        type=float,
+        default=None,
+        help="Starting tolerance multiplier for annealing (e.g., 2.0 = start 2x looser)",
+    )
+    parser.add_argument(
+        "--tol-anneal-steps",
+        type=int,
+        default=None,
+        help="Steps to anneal tolerance over (default: warmup_steps)",
+    )
+    parser.add_argument(
+        "--alpha-start",
+        type=float,
+        default=None,
+        help="Starting alpha (contraction) value for annealing (lower = stronger contraction)",
+    )
+    parser.add_argument(
+        "--alpha-end",
+        type=float,
+        default=None,
+        help="Ending alpha (contraction) value for annealing (higher = weaker contraction)",
+    )
+    parser.add_argument(
+        "--alpha-anneal-steps",
+        type=int,
+        default=None,
+        help="Steps to anneal alpha over (default: warmup_steps)",
+    )
+
     # mHC settings
     parser.add_argument("--num-lanes", type=int, default=None, help="Number of lanes for mHC")
     parser.add_argument(
@@ -531,6 +651,18 @@ def main() -> None:
     if args.deq_backward_tol:
         config.model.deq.implicit_diff_tol = args.deq_backward_tol
 
+    # Annealing settings
+    if args.tol_anneal_start is not None:
+        config.model.deq.tol_anneal_start = args.tol_anneal_start
+    if args.tol_anneal_steps is not None:
+        config.model.deq.tol_anneal_steps = args.tol_anneal_steps
+    if args.alpha_start is not None:
+        config.model.deq.alpha_start = args.alpha_start
+    if args.alpha_end is not None:
+        config.model.deq.alpha_end = args.alpha_end
+    if args.alpha_anneal_steps is not None:
+        config.model.deq.alpha_anneal_steps = args.alpha_anneal_steps
+
     if args.num_lanes:
         config.model.mhc.num_lanes = args.num_lanes
     if args.sinkhorn_iters:
@@ -569,7 +701,13 @@ def main() -> None:
         print(f"  beta: {config.model.deq.beta}")
         print(f"  backward_iters: {config.model.deq.implicit_diff_max_iters}")
         print(f"  backward_tol: {config.model.deq.implicit_diff_tol}")
-        print(f"mHC Settings:")
+        print("Annealing Settings:")
+        print(f"  tol_anneal_start: {config.model.deq.tol_anneal_start}")
+        print(f"  tol_anneal_steps: {config.model.deq.tol_anneal_steps or 'warmup_steps'}")
+        print(f"  alpha_start: {config.model.deq.alpha_start}")
+        print(f"  alpha_end: {config.model.deq.alpha_end}")
+        print(f"  alpha_anneal_steps: {config.model.deq.alpha_anneal_steps or 'warmup_steps'}")
+        print("mHC Settings:")
         print(f"  num_lanes: {config.model.mhc.num_lanes}")
         print(f"  sinkhorn_iters: {config.model.mhc.sinkhorn_iters}")
         print(f"  lr_mult: {config.train.mhc_lr_mult}")

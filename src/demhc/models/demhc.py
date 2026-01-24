@@ -57,9 +57,15 @@ class DEQmHCLayerFunction(nn.Module):
 
         # Contraction factor - ensures the layer is a contraction for DEQ convergence
         # This scales the layer output to ensure ||f(x) - f(y)|| < ||x - y||
-        # Initialize to -2.0 so sigmoid gives ~0.12, meaning strong contraction
-        # (output is 12% new + 88% old, like a small learning rate)
+        # Initialize to 0.0 so sigmoid gives 0.5 (balanced mixing)
         self.contraction_factor = nn.Parameter(torch.tensor(0.0))
+
+        # Override alpha (set externally for annealing, None = use learned contraction_factor)
+        self._alpha_override: float | None = None
+
+    def set_alpha_override(self, alpha: float | None) -> None:
+        """Set an external alpha override for annealing schedules."""
+        self._alpha_override = alpha
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -73,8 +79,11 @@ class DEQmHCLayerFunction(nn.Module):
         h = x + self.attn(self.ln1(x))
         h = h + self.ffn(self.ln2(h))
 
-        # Apply contraction factor (clamped to ensure < 1)
-        alpha = torch.sigmoid(self.contraction_factor)  # in (0, 1)
+        # Apply contraction factor
+        if self._alpha_override is not None:
+            alpha = self._alpha_override
+        else:
+            alpha = torch.sigmoid(self.contraction_factor)  # in (0, 1)
         return alpha * h + (1 - alpha) * x
 
 
@@ -91,6 +100,7 @@ class DEQmHCLayer(nn.Module):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
+        self.num_layers = num_layers
 
         # Hyper connection for lane mixing
         self.hyper_conn = HyperConnection(
@@ -102,27 +112,42 @@ class DEQmHCLayer(nn.Module):
         # The layer function that we find fixed point of
         self.layer_fn = DEQmHCLayerFunction(config)
 
-        # Compute per-layer tolerance if tol_start is specified
+        # Compute base per-layer tolerance if tol_start is specified
         # Linearly interpolate from tol_start (layer 0) to tol (final layer)
         if config.deq.tol_start is not None and num_layers > 1:
             t = layer_idx / (num_layers - 1)  # 0 for first layer, 1 for last
-            layer_tol = config.deq.tol_start * (1 - t) + config.deq.tol * t
+            base_layer_tol = config.deq.tol_start * (1 - t) + config.deq.tol * t
         else:
-            layer_tol = config.deq.tol
+            base_layer_tol = config.deq.tol
+
+        # Store base tolerance (before any annealing multiplier)
+        self.base_layer_tol = base_layer_tol
+        # Current effective tolerance (may be modified by annealing)
+        self.layer_tol = base_layer_tol
 
         # DEQ solver with layer-specific tolerance
         self.deq_solver = DEQSolver(
             solver=config.deq.solver,
             anderson_m=config.deq.anderson_m,
             max_iters=config.deq.max_iters,
-            tol=layer_tol,
+            tol=base_layer_tol,
             beta=config.deq.beta,
             implicit_diff_max_iters=config.deq.implicit_diff_max_iters,
             implicit_diff_tol=config.deq.implicit_diff_tol,
         )
 
-        # Store for logging
-        self.layer_tol = layer_tol
+    def set_tolerance_multiplier(self, multiplier: float) -> None:
+        """Set a tolerance multiplier for annealing schedules.
+
+        Args:
+            multiplier: Multiplier applied to base tolerance (1.0 = no change)
+        """
+        self.layer_tol = self.base_layer_tol * multiplier
+        self.deq_solver.tol = self.layer_tol
+
+    def set_alpha_override(self, alpha: float | None) -> None:
+        """Set alpha override for the layer function."""
+        self.layer_fn.set_alpha_override(alpha)
 
     def forward(self, lanes: Tensor) -> tuple[Tensor, DEQStats]:
         """
@@ -333,3 +358,25 @@ class DEQmHCModel(nn.Module):
         Useful for visualization and debugging.
         """
         return self.lane_aggregator.get_weights()
+
+    def set_tolerance_multiplier(self, multiplier: float) -> None:
+        """Set tolerance multiplier for all layers (for annealing).
+
+        Args:
+            multiplier: Multiplier applied to base tolerances (1.0 = no change)
+        """
+        for layer in self.layers:
+            layer.set_tolerance_multiplier(multiplier)
+
+    def set_alpha_override(self, alpha: float | None) -> None:
+        """Set alpha override for all layers (for annealing).
+
+        Args:
+            alpha: Override alpha value, or None to use learned contraction factors
+        """
+        for layer in self.layers:
+            layer.set_alpha_override(alpha)
+
+    def get_layer_tolerances(self) -> list[float]:
+        """Get current effective tolerances for all layers."""
+        return [layer.layer_tol for layer in self.layers]

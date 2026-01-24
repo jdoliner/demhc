@@ -22,6 +22,19 @@ class DEQConfig:
     implicit_diff_max_iters: int = 8  # Max iterations for backward solve
     implicit_diff_tol: float = 0.15  # Tolerance for backward solve
 
+    # Annealing schedules (applied over training steps)
+    # Tolerance annealing: tolerance multiplier decreases from tol_anneal_start to 1.0
+    # e.g., tol_anneal_start=2.0 means tolerances start 2x looser and anneal to configured values
+    tol_anneal_start: float | None = None  # Starting multiplier (None = no annealing)
+    tol_anneal_steps: int | None = None  # Steps to anneal over (None = use warmup_steps)
+
+    # Contraction annealing: alpha (contraction strength) increases from alpha_start to alpha_end
+    # Lower alpha = stronger contraction (more stable but less expressive)
+    # Higher alpha = weaker contraction (more expressive but may not converge)
+    alpha_start: float | None = None  # Starting alpha value (None = no annealing, use learned)
+    alpha_end: float | None = None  # Ending alpha value (None = no annealing, use learned)
+    alpha_anneal_steps: int | None = None  # Steps to anneal over (None = use warmup_steps)
+
 
 @dataclass
 class mHCConfig:

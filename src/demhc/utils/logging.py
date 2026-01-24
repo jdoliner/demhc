@@ -42,7 +42,9 @@ class MetricsLogger:
         step = step if step is not None else self._step
         self.writer.add_scalar(tag, value, step)
 
-    def log_scalars(self, main_tag: str, tag_scalar_dict: dict[str, float], step: int | None = None) -> None:
+    def log_scalars(
+        self, main_tag: str, tag_scalar_dict: dict[str, float], step: int | None = None
+    ) -> None:
         """Log multiple scalars under a main tag."""
         step = step if step is not None else self._step
         self.writer.add_scalars(main_tag, tag_scalar_dict, step)
@@ -87,6 +89,9 @@ class MetricsLogger:
         layer_iters: list[int],
         layer_residuals: list[float],
         step: int | None = None,
+        layer_tolerances: list[float] | None = None,
+        tol_multiplier: float | None = None,
+        alpha_override: float | None = None,
     ) -> None:
         """Log DEQ convergence statistics."""
         step = step if step is not None else self._step
@@ -95,9 +100,20 @@ class MetricsLogger:
             self.log_scalar(f"deq/layer_{i}_iters", iters, step)
             self.log_scalar(f"deq/layer_{i}_residual", residual, step)
 
+        # Log current effective tolerances
+        if layer_tolerances is not None:
+            for i, tol in enumerate(layer_tolerances):
+                self.log_scalar(f"deq/layer_{i}_tolerance", tol, step)
+
         self.log_scalar("deq/total_iters", sum(layer_iters), step)
         self.log_scalar("deq/mean_iters", sum(layer_iters) / len(layer_iters), step)
         self.log_scalar("deq/max_residual", max(layer_residuals), step)
+
+        # Log annealing values
+        if tol_multiplier is not None:
+            self.log_scalar("deq/tol_multiplier", tol_multiplier, step)
+        if alpha_override is not None:
+            self.log_scalar("deq/alpha_override", alpha_override, step)
 
     def log_mhc_stats(
         self,
@@ -112,7 +128,9 @@ class MetricsLogger:
             # Log matrix statistics
             self.log_scalar(f"mhc/layer_{i}_max_weight", M.max().item(), step)
             self.log_scalar(f"mhc/layer_{i}_min_weight", M.min().item(), step)
-            self.log_scalar(f"mhc/layer_{i}_entropy", -(M * M.log().clamp(min=-100)).sum().item(), step)
+            self.log_scalar(
+                f"mhc/layer_{i}_entropy", -(M * M.log().clamp(min=-100)).sum().item(), step
+            )
 
         # Aggregation weights
         self.log_scalar("mhc/agg_max_weight", aggregation_weights.max().item(), step)
