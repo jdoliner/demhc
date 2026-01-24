@@ -25,6 +25,8 @@ def anderson_acceleration(
     max_iters: int = 30,
     tol: float = 1e-5,
     beta: float = 1.0,
+    iter_dropout: float = 0.0,
+    iter_noise: float = 0.0,
 ) -> tuple[Tensor, DEQStats]:
     """Find fixed point x* such that f(x*) = x* using Anderson Acceleration.
 
@@ -39,6 +41,8 @@ def anderson_acceleration(
         max_iters: Maximum number of iterations.
         tol: Convergence tolerance (relative residual norm).
         beta: Mixing parameter (1.0 = pure Anderson, 0.0 = pure fixed-point).
+        iter_dropout: Probability of skipping each iteration (regularization).
+        iter_noise: Std dev of Gaussian noise added to intermediate states.
 
     Returns:
         Tuple of (fixed_point, stats).
@@ -54,6 +58,11 @@ def anderson_acceleration(
     F_history: list[Tensor] = []  # f(x) - x residuals
 
     for k in range(max_iters):
+        # Iteration dropout: randomly skip this iteration (during training only)
+        # This acts as regularization by making the number of iterations stochastic
+        if iter_dropout > 0 and torch.rand(1).item() < iter_dropout:
+            continue
+
         # Compute f(x) and residual
         x_full = x.reshape(batch_shape)
         fx_full = f(x_full)
@@ -126,6 +135,10 @@ def anderson_acceleration(
             # Simple fixed-point iteration for first step
             x = x + beta * residual
 
+        # Noise injection: add Gaussian noise to intermediate state (regularization)
+        if iter_noise > 0:
+            x = x + iter_noise * torch.randn_like(x)
+
     # Compute final residual after the last iteration's update
     # The loop checks convergence at the START of each iteration, so after the last
     # x update we need to check once more to see if we actually converged
@@ -154,6 +167,8 @@ def simple_fixed_point(
     max_iters: int = 30,
     tol: float = 1e-5,
     beta: float = 1.0,
+    iter_dropout: float = 0.0,
+    iter_noise: float = 0.0,
 ) -> tuple[Tensor, DEQStats]:
     """Simple fixed-point iteration: x_{k+1} = (1-beta)*x_k + beta*f(x_k).
 
@@ -163,6 +178,10 @@ def simple_fixed_point(
     x = x0
 
     for k in range(max_iters):
+        # Iteration dropout: randomly skip this iteration (during training only)
+        if iter_dropout > 0 and torch.rand(1).item() < iter_dropout:
+            continue
+
         fx = f(x)
         residual = fx - x
         residual_norm = residual.norm()
@@ -174,6 +193,10 @@ def simple_fixed_point(
             return fx, stats
 
         x = x + beta * residual
+
+        # Noise injection: add Gaussian noise to intermediate state
+        if iter_noise > 0:
+            x = x + iter_noise * torch.randn_like(x)
 
     # Compute final residual after the last iteration's update
     # The loop checks convergence at the START of each iteration, so after the last
@@ -316,6 +339,8 @@ class DEQSolver(nn.Module):
         beta: float = 1.0,
         implicit_diff_max_iters: int = 30,
         implicit_diff_tol: float = 1e-5,
+        iter_dropout: float = 0.0,
+        iter_noise: float = 0.0,
     ):
         super().__init__()
         self.solver = solver
@@ -325,6 +350,8 @@ class DEQSolver(nn.Module):
         self.beta = beta
         self.implicit_diff_max_iters = implicit_diff_max_iters
         self.implicit_diff_tol = implicit_diff_tol
+        self.iter_dropout = iter_dropout
+        self.iter_noise = iter_noise
 
     def forward(
         self,
@@ -350,9 +377,11 @@ class DEQSolver(nn.Module):
                 max_iters=self.max_iters,
                 tol=self.tol,
                 beta=self.beta,
+                iter_dropout=self.iter_dropout,
+                iter_noise=self.iter_noise,
             )
         else:
-            # During eval, just run the solver without custom backward
+            # During eval, just run the solver without custom backward (no regularization)
             if self.solver == "anderson":
                 return anderson_acceleration(
                     f, x0, m=self.anderson_m, max_iters=self.max_iters, tol=self.tol, beta=self.beta
@@ -371,6 +400,8 @@ def deq_forward_unrolled(
     max_iters: int = 30,
     tol: float = 1e-5,
     beta: float = 1.0,
+    iter_dropout: float = 0.0,
+    iter_noise: float = 0.0,
     **kwargs,  # Ignore implicit diff params
 ) -> tuple[Tensor, DEQStats]:
     """Forward pass with unrolled differentiation.
@@ -382,6 +413,23 @@ def deq_forward_unrolled(
     For larger iteration counts, consider using gradient checkpointing.
     """
     if solver == "anderson":
-        return anderson_acceleration(f, x0, m=anderson_m, max_iters=max_iters, tol=tol, beta=beta)
+        return anderson_acceleration(
+            f,
+            x0,
+            m=anderson_m,
+            max_iters=max_iters,
+            tol=tol,
+            beta=beta,
+            iter_dropout=iter_dropout,
+            iter_noise=iter_noise,
+        )
     else:
-        return simple_fixed_point(f, x0, max_iters=max_iters, tol=tol, beta=beta)
+        return simple_fixed_point(
+            f,
+            x0,
+            max_iters=max_iters,
+            tol=tol,
+            beta=beta,
+            iter_dropout=iter_dropout,
+            iter_noise=iter_noise,
+        )

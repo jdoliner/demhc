@@ -125,7 +125,7 @@ class DEQmHCLayer(nn.Module):
         # Current effective tolerance (may be modified by annealing)
         self.layer_tol = base_layer_tol
 
-        # DEQ solver with layer-specific tolerance
+        # DEQ solver with layer-specific tolerance and regularization
         self.deq_solver = DEQSolver(
             solver=config.deq.solver,
             anderson_m=config.deq.anderson_m,
@@ -134,7 +134,12 @@ class DEQmHCLayer(nn.Module):
             beta=config.deq.beta,
             implicit_diff_max_iters=config.deq.implicit_diff_max_iters,
             implicit_diff_tol=config.deq.implicit_diff_tol,
+            iter_dropout=config.deq.iter_dropout,
+            iter_noise=config.deq.iter_noise,
         )
+
+        # Lane dropout probability
+        self.lane_dropout = config.mhc.lane_dropout
 
     def set_tolerance_multiplier(self, multiplier: float) -> None:
         """Set a tolerance multiplier for annealing schedules.
@@ -158,6 +163,18 @@ class DEQmHCLayer(nn.Module):
             Tuple of (output_lanes, stats) where output_lanes has same shape as input
         """
         batch, seq, num_lanes, hidden = lanes.shape
+
+        # Lane dropout: randomly drop lanes during training (regularization)
+        # Dropped lanes are zeroed out and remaining lanes are rescaled
+        if self.training and self.lane_dropout > 0:
+            # Create dropout mask: (1, 1, num_lanes, 1) for broadcasting
+            keep_prob = 1.0 - self.lane_dropout
+            lane_mask = (torch.rand(1, 1, num_lanes, 1, device=lanes.device) < keep_prob).float()
+            # Ensure at least one lane is kept
+            if lane_mask.sum() == 0:
+                lane_mask[0, 0, 0, 0] = 1.0
+            # Apply mask and rescale
+            lanes = lanes * lane_mask / (lane_mask.mean() + 1e-8)
 
         # Step 1: Mix lanes using doubly stochastic matrix
         mixed = self.hyper_conn(lanes)  # (batch, seq, num_lanes, hidden)

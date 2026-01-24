@@ -578,10 +578,30 @@ def parse_args() -> argparse.Namespace:
         help="Steps to anneal alpha over (default: warmup_steps)",
     )
 
+    # DEQ regularization settings
+    parser.add_argument(
+        "--iter-dropout",
+        type=float,
+        default=None,
+        help="Probability of skipping each DEQ iteration (regularization, default: 0.0)",
+    )
+    parser.add_argument(
+        "--iter-noise",
+        type=float,
+        default=None,
+        help="Std dev of noise added during DEQ iterations (regularization, default: 0.0)",
+    )
+
     # mHC settings
     parser.add_argument("--num-lanes", type=int, default=None, help="Number of lanes for mHC")
     parser.add_argument(
         "--sinkhorn-iters", type=int, default=None, help="Sinkhorn-Knopp iterations"
+    )
+    parser.add_argument(
+        "--lane-dropout",
+        type=float,
+        default=None,
+        help="Probability of dropping each lane (regularization, default: 0.0)",
     )
 
     # Training settings
@@ -663,10 +683,18 @@ def main() -> None:
     if args.alpha_anneal_steps is not None:
         config.model.deq.alpha_anneal_steps = args.alpha_anneal_steps
 
+    # Regularization settings
+    if args.iter_dropout is not None:
+        config.model.deq.iter_dropout = args.iter_dropout
+    if args.iter_noise is not None:
+        config.model.deq.iter_noise = args.iter_noise
+
     if args.num_lanes:
         config.model.mhc.num_lanes = args.num_lanes
     if args.sinkhorn_iters:
         config.model.mhc.sinkhorn_iters = args.sinkhorn_iters
+    if args.lane_dropout is not None:
+        config.model.mhc.lane_dropout = args.lane_dropout
 
     if args.batch_size:
         config.train.batch_size = args.batch_size
@@ -707,6 +735,10 @@ def main() -> None:
         print(f"  alpha_start: {config.model.deq.alpha_start}")
         print(f"  alpha_end: {config.model.deq.alpha_end}")
         print(f"  alpha_anneal_steps: {config.model.deq.alpha_anneal_steps or 'warmup_steps'}")
+        print("Regularization Settings:")
+        print(f"  iter_dropout: {config.model.deq.iter_dropout}")
+        print(f"  iter_noise: {config.model.deq.iter_noise}")
+        print(f"  lane_dropout: {config.model.mhc.lane_dropout}")
         print("mHC Settings:")
         print(f"  num_lanes: {config.model.mhc.num_lanes}")
         print(f"  sinkhorn_iters: {config.model.mhc.sinkhorn_iters}")

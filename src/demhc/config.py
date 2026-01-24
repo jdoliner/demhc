@@ -35,6 +35,15 @@ class DEQConfig:
     alpha_end: float | None = None  # Ending alpha value (None = no annealing, use learned)
     alpha_anneal_steps: int | None = None  # Steps to anneal over (None = use warmup_steps)
 
+    # Regularization settings
+    # Iteration dropout: probability of skipping each iteration (0.0 = no dropout)
+    # This adds stochasticity to the fixed-point solving, acting as regularization
+    iter_dropout: float = 0.0
+
+    # Noise injection: standard deviation of Gaussian noise added during iterations
+    # Adds noise to intermediate states during fixed-point iteration
+    iter_noise: float = 0.0
+
 
 @dataclass
 class mHCConfig:
@@ -43,6 +52,10 @@ class mHCConfig:
     num_lanes: int = 4  # Number of parallel lanes
     sinkhorn_iters: int = 10  # Iterations for Sinkhorn-Knopp projection
     sinkhorn_eps: float = 1e-8  # Numerical stability epsilon
+
+    # Lane dropout: probability of dropping each lane during training (0.0 = no dropout)
+    # Dropped lanes are replaced with zeros and rescaled
+    lane_dropout: float = 0.0
 
 
 @dataclass
