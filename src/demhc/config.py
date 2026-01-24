@@ -118,6 +118,7 @@ class DataConfig:
     """Configuration for data loading."""
 
     dataset: str = "roneneldan/TinyStories"
+    subset: str | None = None  # Dataset subset/config (e.g., "sample-10BT" for FineWeb)
     tokenizer: str = "gpt2"
     max_seq_len: int = 512
     num_workers: int = 4

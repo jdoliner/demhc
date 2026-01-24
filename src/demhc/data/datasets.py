@@ -14,6 +14,7 @@ class DataConfig:
     """Configuration for data loading."""
 
     dataset: str = "roneneldan/TinyStories"
+    subset: str | None = None  # Dataset subset/config (e.g., "sample-10BT" for FineWeb)
     tokenizer: str = "gpt2"
     max_seq_len: int = 512
     num_workers: int = 4
@@ -29,8 +30,10 @@ class TokenizedDataset(IterableDataset):
         tokenizer_name: str,
         max_seq_len: int,
         seed: int = 42,
+        subset: str | None = None,
     ):
         self.dataset_name = dataset_name
+        self.subset = subset
         self.split = split
         self.max_seq_len = max_seq_len
         self.seed = seed
@@ -44,6 +47,7 @@ class TokenizedDataset(IterableDataset):
         # Load dataset in streaming mode for memory efficiency
         dataset = load_dataset(
             self.dataset_name,
+            self.subset,
             split=self.split,
             streaming=True,
         )
@@ -85,6 +89,7 @@ class FiniteTokenizedDataset(torch.utils.data.Dataset):
         max_seq_len: int,
         max_examples: int = 10000,
         seed: int = 42,
+        subset: str | None = None,
     ):
         self.max_seq_len = max_seq_len
         self.max_examples = max_examples
@@ -97,6 +102,7 @@ class FiniteTokenizedDataset(torch.utils.data.Dataset):
         # Load dataset
         dataset = load_dataset(
             dataset_name,
+            subset,
             split=split,
             streaming=True,
         )
@@ -149,6 +155,10 @@ def create_dataloaders(
     Returns:
         Tuple of (train_loader, val_loader, test_loader)
     """
+    # Check if this dataset has a validation split
+    # Most large datasets (FineWeb, OpenWebText, etc.) only have train split
+    has_validation_split = config.dataset in ["roneneldan/TinyStories"]
+
     # Training dataset (streaming/infinite)
     train_dataset = TokenizedDataset(
         dataset_name=config.dataset,
@@ -156,6 +166,7 @@ def create_dataloaders(
         tokenizer_name=config.tokenizer,
         max_seq_len=config.max_seq_len,
         seed=seed,
+        subset=config.subset,
     )
 
     train_loader = DataLoader(
@@ -166,13 +177,16 @@ def create_dataloaders(
     )
 
     # Validation dataset (finite, loaded into memory)
+    # For datasets without validation split, we use a portion of train with different seed
+    val_split = "validation" if has_validation_split else "train"
     val_dataset = FiniteTokenizedDataset(
         dataset_name=config.dataset,
-        split="validation",
+        split=val_split,
         tokenizer_name=config.tokenizer,
         max_seq_len=config.max_seq_len,
         max_examples=5000,
-        seed=seed,
+        seed=seed + 500 if not has_validation_split else seed,  # Different seed for train-based val
+        subset=config.subset,
     )
 
     val_loader = DataLoader(
@@ -184,14 +198,15 @@ def create_dataloaders(
     )
 
     # Test dataset (finite, loaded into memory)
-    # TinyStories doesn't have a test split, so we use a different seed on validation
+    # Use different seed to get different examples
     test_dataset = FiniteTokenizedDataset(
         dataset_name=config.dataset,
-        split="validation",
+        split=val_split,
         tokenizer_name=config.tokenizer,
         max_seq_len=config.max_seq_len,
         max_examples=5000,
         seed=seed + 1000,  # Different seed to get different examples
+        subset=config.subset,
     )
 
     test_loader = DataLoader(

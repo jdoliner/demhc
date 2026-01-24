@@ -616,6 +616,20 @@ def parse_args() -> argparse.Namespace:
         help="Learning rate multiplier for mHC params (default: 30.0)",
     )
 
+    # Dataset settings
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        help="Dataset name (default: roneneldan/TinyStories). Try: HuggingFaceFW/fineweb-edu, openwebtext",
+    )
+    parser.add_argument(
+        "--dataset-subset",
+        type=str,
+        default=None,
+        help="Dataset subset/config (e.g., 'sample-10BT' for FineWeb-Edu)",
+    )
+
     # Other settings
     parser.add_argument("--output-dir", type=str, default="outputs", help="Output directory")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -707,6 +721,12 @@ def main() -> None:
     if args.mhc_lr_mult:
         config.train.mhc_lr_mult = args.mhc_lr_mult
 
+    # Dataset settings
+    if args.dataset:
+        config.data.dataset = args.dataset
+    if args.dataset_subset:
+        config.data.subset = args.dataset_subset
+
     config.output_dir = args.output_dir
     config.seed = args.seed
     config.train.compile = not args.no_compile
@@ -718,6 +738,10 @@ def main() -> None:
     print(f"Experiment: {config.name}")
     print(f"Model: {config.model_type}")
     print(f"Size: {config.size}")
+    print(
+        f"Dataset: {config.data.dataset}"
+        + (f" ({config.data.subset})" if config.data.subset else "")
+    )
     print(f"Output: {config.output_dir}/{config.name}")
     if config.model_type == "demhc":
         print("-" * 60)
