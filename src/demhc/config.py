@@ -94,12 +94,18 @@ class TrainConfig:
 
     # Optimization
     batch_size: int = 64
+    gradient_accumulation_steps: int = 1  # Number of micro-batches to accumulate
     learning_rate: float = 3e-4
     weight_decay: float = 0.1
     beta1: float = 0.9
     beta2: float = 0.95
     gradient_clip: float = 1.0
     mhc_lr_mult: float = 30.0  # Learning rate multiplier for mHC params
+
+    @property
+    def effective_batch_size(self) -> int:
+        """Effective batch size = batch_size * gradient_accumulation_steps."""
+        return self.batch_size * self.gradient_accumulation_steps
 
     # Schedule
     warmup_steps: int = 1000

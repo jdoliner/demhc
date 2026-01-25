@@ -337,55 +337,65 @@ def train(config: ExperimentConfig, resume: str | None = None) -> None:
     # Training loop
     model.train()
     running_loss = 0.0
+    grad_accum_steps = config.train.gradient_accumulation_steps
     progress_bar = tqdm(range(start_step, config.train.max_steps), desc="Training")
 
     for step in progress_bar:
-        # Get next batch (with automatic reset)
-        try:
-            batch = next(train_iter)
-        except StopIteration:
-            train_iter = iter(train_loader)
-            batch = next(train_iter)
-
-        input_ids = batch["input_ids"].to(device)
-        labels = batch["labels"].to(device)
-
-        # Apply annealing schedules (tolerance and alpha)
+        # Apply annealing schedules (tolerance and alpha) once per optimizer step
         tol_multiplier, alpha_override = apply_annealing(model, step, config)
 
-        # Forward pass with mixed precision
-        with torch.autocast(device_type="cuda", dtype=dtype):
-            if isinstance(model, DEQmHCModel) or (
-                hasattr(model, "_orig_mod") and isinstance(model._orig_mod, DEQmHCModel)
-            ):
-                # For DEQ model, get stats for logging
-                logits, stats = (
-                    model._orig_mod(input_ids, return_stats=True)
-                    if hasattr(model, "_orig_mod")
-                    else model(input_ids, return_stats=True)
-                )
-            else:
-                logits = model(input_ids)
-                stats = None
-
-            loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)),
-                labels.view(-1),
-            )
-
-        # Backward pass
+        # Zero gradients at the start of accumulation
         optimizer.zero_grad()
-        loss.backward()
 
-        # Gradient clipping
+        # Accumulate gradients over micro-batches
+        step_loss = 0.0
+        stats = None  # Keep last stats for logging
+        for micro_step in range(grad_accum_steps):
+            # Get next batch (with automatic reset)
+            try:
+                batch = next(train_iter)
+            except StopIteration:
+                train_iter = iter(train_loader)
+                batch = next(train_iter)
+
+            input_ids = batch["input_ids"].to(device)
+            labels = batch["labels"].to(device)
+
+            # Forward pass with mixed precision
+            with torch.autocast(device_type="cuda", dtype=dtype):
+                if isinstance(model, DEQmHCModel) or (
+                    hasattr(model, "_orig_mod") and isinstance(model._orig_mod, DEQmHCModel)
+                ):
+                    # For DEQ model, get stats for logging
+                    logits, stats = (
+                        model._orig_mod(input_ids, return_stats=True)
+                        if hasattr(model, "_orig_mod")
+                        else model(input_ids, return_stats=True)
+                    )
+                else:
+                    logits = model(input_ids)
+                    stats = None
+
+                loss = F.cross_entropy(
+                    logits.view(-1, logits.size(-1)),
+                    labels.view(-1),
+                )
+                # Scale loss by accumulation steps for correct gradient averaging
+                scaled_loss = loss / grad_accum_steps
+
+            # Backward pass (accumulates gradients)
+            scaled_loss.backward()
+            step_loss += loss.item()
+
+        # Gradient clipping (after accumulation)
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.gradient_clip)
 
         # Optimizer step
         optimizer.step()
         scheduler.step()
 
-        # Update running loss
-        running_loss += loss.item()
+        # Update running loss (average over micro-batches)
+        running_loss += step_loss / grad_accum_steps
         logger.step = step
 
         # Logging
@@ -615,7 +625,14 @@ def parse_args() -> argparse.Namespace:
     )
 
     # Training settings
-    parser.add_argument("--batch-size", type=int, default=None, help="Batch size")
+    parser.add_argument("--batch-size", type=int, default=None, help="Batch size (micro-batch)")
+    parser.add_argument(
+        "--gradient-accumulation-steps",
+        type=int,
+        default=None,
+        help="Number of micro-batches to accumulate before optimizer step (default: 1). "
+        "Effective batch size = batch_size * gradient_accumulation_steps",
+    )
     parser.add_argument("--learning-rate", type=float, default=None, help="Learning rate")
     parser.add_argument("--max-steps", type=int, default=None, help="Maximum training steps")
     parser.add_argument("--warmup-steps", type=int, default=None, help="Warmup steps")
@@ -727,6 +744,8 @@ def main() -> None:
 
     if args.batch_size:
         config.train.batch_size = args.batch_size
+    if args.gradient_accumulation_steps:
+        config.train.gradient_accumulation_steps = args.gradient_accumulation_steps
     if args.learning_rate:
         config.train.learning_rate = args.learning_rate
     if args.max_steps:
@@ -758,6 +777,11 @@ def main() -> None:
         + (f" ({config.data.subset})" if config.data.subset else "")
     )
     print(f"Output: {config.output_dir}/{config.name}")
+    print("-" * 60)
+    print("Training Settings:")
+    print(f"  batch_size (micro): {config.train.batch_size}")
+    print(f"  gradient_accumulation_steps: {config.train.gradient_accumulation_steps}")
+    print(f"  effective_batch_size: {config.train.effective_batch_size}")
     if config.model_type == "demhc":
         print("-" * 60)
         print("DEQ Settings:")
