@@ -507,6 +507,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-heads", type=int, default=None, help="Number of attention heads")
     parser.add_argument("--num-layers", type=int, default=None, help="Number of layers")
     parser.add_argument("--dropout", type=float, default=None, help="Dropout rate")
+    parser.add_argument(
+        "--max-seq-len", type=int, default=None, help="Maximum sequence length (default: 512)"
+    )
+    parser.add_argument(
+        "--pos-emb-type",
+        type=str,
+        choices=["learned", "rope"],
+        default=None,
+        help="Position embedding type: 'learned' (absolute) or 'rope' (rotary, better for long contexts)",
+    )
 
     # DEQ settings
     parser.add_argument(
@@ -669,6 +679,11 @@ def main() -> None:
         config.model.num_layers = args.num_layers
     if args.dropout:
         config.model.dropout = args.dropout
+    if args.max_seq_len:
+        config.model.max_seq_len = args.max_seq_len
+        config.data.max_seq_len = args.max_seq_len  # Also update data config
+    if args.pos_emb_type:
+        config.model.pos_emb_type = args.pos_emb_type
 
     if args.anderson_m:
         config.model.deq.anderson_m = args.anderson_m

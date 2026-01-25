@@ -12,6 +12,7 @@ class MultiHeadAttention(nn.Module):
     """Multi-head self-attention with causal masking.
 
     Uses pre-norm architecture (LayerNorm applied before attention in the caller).
+    Supports both learned positional embeddings (applied externally) and RoPE.
     """
 
     def __init__(
@@ -20,6 +21,8 @@ class MultiHeadAttention(nn.Module):
         num_heads: int,
         dropout: float = 0.1,
         max_seq_len: int = 512,
+        use_rope: bool = False,
+        rope_base: float = 10000.0,
     ):
         super().__init__()
         assert hidden_dim % num_heads == 0, "hidden_dim must be divisible by num_heads"
@@ -28,6 +31,7 @@ class MultiHeadAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = hidden_dim // num_heads
         self.scale = self.head_dim**-0.5
+        self.use_rope = use_rope
 
         # Combined QKV projection for efficiency
         self.qkv_proj = nn.Linear(hidden_dim, 3 * hidden_dim, bias=False)
@@ -36,7 +40,13 @@ class MultiHeadAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.attn_dropout = nn.Dropout(dropout)
 
-        # Register causal mask as a buffer
+        # RoPE embeddings (optional)
+        if use_rope:
+            self.rope = RotaryEmbedding(self.head_dim, max_seq_len=max_seq_len, base=rope_base)
+        else:
+            self.rope = None
+
+        # Register causal mask as a buffer (kept for compatibility, but not used with SDPA)
         self.register_buffer(
             "causal_mask",
             torch.tril(torch.ones(max_seq_len, max_seq_len, dtype=torch.bool)),
@@ -58,6 +68,11 @@ class MultiHeadAttention(nn.Module):
         qkv = qkv.reshape(batch_size, seq_len, 3, self.num_heads, self.head_dim)
         qkv = qkv.permute(2, 0, 3, 1, 4)  # (3, batch, heads, seq, head_dim)
         q, k, v = qkv[0], qkv[1], qkv[2]
+
+        # Apply RoPE if enabled
+        if self.rope is not None:
+            cos, sin = self.rope(x, seq_len)
+            q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
         # Scaled dot-product attention with causal mask
         # Using PyTorch's optimized scaled_dot_product_attention

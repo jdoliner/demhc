@@ -71,6 +71,10 @@ class ModelConfig:
     max_seq_len: int = 512
     dropout: float = 0.1
 
+    # Position embedding type: "learned" (absolute) or "rope" (rotary)
+    pos_emb_type: Literal["learned", "rope"] = "learned"
+    rope_base: float = 10000.0  # Base for RoPE frequency computation
+
     # DEQ and mHC configs
     deq: DEQConfig = field(default_factory=DEQConfig)
     mhc: mHCConfig = field(default_factory=mHCConfig)

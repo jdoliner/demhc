@@ -47,6 +47,8 @@ class DEQmHCLayerFunction(nn.Module):
             num_heads=config.num_heads,
             dropout=config.dropout,
             max_seq_len=config.max_seq_len,
+            use_rope=(config.pos_emb_type == "rope"),
+            rope_base=config.rope_base,
         )
         self.ln2 = nn.LayerNorm(config.hidden_dim)
         self.ffn = FeedForward(
@@ -228,7 +230,12 @@ class DEQmHCModel(nn.Module):
 
         # Embeddings
         self.token_emb = nn.Embedding(config.vocab_size, config.hidden_dim)
-        self.pos_emb = nn.Embedding(config.max_seq_len, config.hidden_dim)
+        # Only use learned positional embeddings if not using RoPE
+        # RoPE is applied inside the attention layers
+        if config.pos_emb_type == "learned":
+            self.pos_emb = nn.Embedding(config.max_seq_len, config.hidden_dim)
+        else:
+            self.pos_emb = None
 
         # Lane expansion (1 -> k lanes)
         self.lane_expander = LaneExpander(config.mhc.num_lanes, config.hidden_dim)
@@ -285,9 +292,14 @@ class DEQmHCModel(nn.Module):
 
         # Get embeddings
         tok_emb = self.token_emb(input_ids)  # (batch, seq, hidden)
-        pos = torch.arange(seq_len, device=device)
-        pos_emb = self.pos_emb(pos)  # (seq, hidden)
-        x = tok_emb + pos_emb
+        if self.pos_emb is not None:
+            # Learned positional embeddings
+            pos = torch.arange(seq_len, device=device)
+            pos_emb = self.pos_emb(pos)  # (seq, hidden)
+            x = tok_emb + pos_emb
+        else:
+            # Using RoPE (applied inside attention layers)
+            x = tok_emb
 
         # Expand to k lanes
         lanes = self.lane_expander(x)  # (batch, seq, k, hidden)
@@ -318,7 +330,8 @@ class DEQmHCModel(nn.Module):
         n_params = sum(p.numel() for p in self.parameters())
         if non_embedding:
             n_params -= self.token_emb.weight.numel()
-            n_params -= self.pos_emb.weight.numel()
+            if self.pos_emb is not None:
+                n_params -= self.pos_emb.weight.numel()
         return n_params
 
     @torch.no_grad()
