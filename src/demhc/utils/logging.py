@@ -136,6 +136,31 @@ class MetricsLogger:
         self.log_scalar("mhc/agg_max_weight", aggregation_weights.max().item(), step)
         self.log_scalar("mhc/agg_min_weight", aggregation_weights.min().item(), step)
 
+    def log_samples(
+        self,
+        samples: list[dict[str, str]],
+        step: int | None = None,
+    ) -> None:
+        """Log generated text samples.
+
+        Args:
+            samples: List of dicts with 'prompt' and 'generated' keys
+            step: Training step (uses internal step if not provided)
+        """
+        step = step if step is not None else self._step
+
+        # Format samples as markdown for TensorBoard
+        markdown_parts = []
+        for i, sample in enumerate(samples):
+            prompt = sample.get("prompt", "")
+            generated = sample.get("generated", "")
+            markdown_parts.append(
+                f"### Sample {i + 1}\n\n**Prompt:** {prompt}\n\n**Generated:** {generated}\n\n---\n"
+            )
+
+        combined_text = "\n".join(markdown_parts)
+        self.log_text("samples/generated", combined_text, step)
+
     def flush(self) -> None:
         """Flush the writer."""
         self.writer.flush()

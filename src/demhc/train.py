@@ -14,6 +14,7 @@ import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from tqdm import tqdm
+from transformers import AutoTokenizer
 
 from demhc.config import (
     DataConfig,
@@ -277,6 +278,89 @@ def evaluate(
     return total_loss / max(num_batches, 1)
 
 
+# Default prompts for sample generation
+DEFAULT_PROMPTS = [
+    "Once upon a time",
+    "The little girl",
+    "One day, a",
+]
+
+
+@torch.no_grad()
+def generate_samples(
+    model: nn.Module,
+    tokenizer: AutoTokenizer,
+    device: torch.device,
+    dtype: torch.dtype,
+    prompts: list[str] | None = None,
+    max_new_tokens: int = 128,
+    temperature: float = 0.8,
+    top_k: int = 50,
+) -> list[dict[str, str]]:
+    """Generate text samples from the model.
+
+    Args:
+        model: The model to generate from
+        tokenizer: Tokenizer for encoding/decoding
+        device: Device to run on
+        dtype: Data type for mixed precision
+        prompts: List of prompt strings (uses defaults if None)
+        max_new_tokens: Maximum number of tokens to generate
+        temperature: Sampling temperature (lower = more deterministic)
+        top_k: Top-k sampling (0 = disabled, use full distribution)
+
+    Returns:
+        List of dicts with 'prompt' and 'generated' keys
+    """
+    model.eval()
+    prompts = prompts or DEFAULT_PROMPTS
+    samples = []
+
+    for prompt in prompts:
+        # Encode prompt
+        input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
+
+        # Generate tokens autoregressively
+        generated_ids = input_ids.clone()
+
+        for _ in range(max_new_tokens):
+            # Forward pass
+            with torch.autocast(device_type="cuda", dtype=dtype):
+                logits = model(generated_ids)
+
+            # Get logits for the last token
+            next_token_logits = logits[:, -1, :] / temperature
+
+            # Apply top-k filtering
+            if top_k > 0:
+                # Get top-k values and indices
+                top_k_logits, top_k_indices = torch.topk(next_token_logits, top_k, dim=-1)
+                # Create a mask for non-top-k tokens
+                next_token_logits = torch.full_like(next_token_logits, float("-inf"))
+                next_token_logits.scatter_(-1, top_k_indices, top_k_logits)
+
+            # Sample from the distribution
+            probs = F.softmax(next_token_logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+
+            # Append to generated sequence
+            generated_ids = torch.cat([generated_ids, next_token], dim=-1)
+
+            # Stop if we hit the EOS token
+            if next_token.item() == tokenizer.eos_token_id:
+                break
+
+        # Decode the generated text
+        generated_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+        # Extract just the newly generated part
+        continuation = generated_text[len(prompt) :].strip()
+
+        samples.append({"prompt": prompt, "generated": continuation})
+
+    model.train()
+    return samples
+
+
 def train(config: ExperimentConfig, resume: str | None = None) -> None:
     """Main training loop.
 
@@ -304,7 +388,7 @@ def train(config: ExperimentConfig, resume: str | None = None) -> None:
     writer = setup_tensorboard(str(log_dir), config.name)
     logger = MetricsLogger(writer)
 
-    # Create data loaders
+    # Create data loaders and tokenizer
     print("Loading data...")
     train_loader, val_loader, test_loader = create_dataloaders(
         config.data,
@@ -312,6 +396,11 @@ def train(config: ExperimentConfig, resume: str | None = None) -> None:
         seed=config.seed,
     )
     train_iter = iter(train_loader)
+
+    # Load tokenizer for sample generation
+    tokenizer = AutoTokenizer.from_pretrained(config.data.tokenizer)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
     # Create model
     print("Creating model...")
@@ -441,6 +530,31 @@ def train(config: ExperimentConfig, resume: str | None = None) -> None:
             logger.log_validation(val_loss, step=step)
             print(f"Validation loss: {val_loss:.4f}, perplexity: {2**val_loss:.2f}")
 
+            # Generate and log samples
+            if config.train.num_samples > 0:
+                print("Generating samples...")
+                samples = generate_samples(
+                    model=model,
+                    tokenizer=tokenizer,
+                    device=device,
+                    dtype=dtype,
+                    prompts=DEFAULT_PROMPTS[: config.train.num_samples],
+                    max_new_tokens=config.train.sample_max_tokens,
+                    temperature=config.train.sample_temperature,
+                    top_k=config.train.sample_top_k,
+                )
+
+                # Print samples to terminal
+                print("-" * 40)
+                for i, sample in enumerate(samples):
+                    print(f"Sample {i + 1}:")
+                    print(f"  Prompt: {sample['prompt']}")
+                    print(f"  Generated: {sample['generated'][:200]}...")
+                print("-" * 40)
+
+                # Log to TensorBoard
+                logger.log_samples(samples, step=step)
+
             # Log mHC stats for DEQ model
             if isinstance(model, DEQmHCModel) or (
                 hasattr(model, "_orig_mod") and isinstance(model._orig_mod, DEQmHCModel)
@@ -469,6 +583,27 @@ def train(config: ExperimentConfig, resume: str | None = None) -> None:
     test_loss = evaluate(model, test_loader, device, dtype, max_batches=100)
     print(f"Final validation loss: {val_loss:.4f}, perplexity: {2**val_loss:.2f}")
     print(f"Final test loss: {test_loss:.4f}, perplexity: {2**test_loss:.2f}")
+
+    # Generate final samples
+    if config.train.num_samples > 0:
+        print("\nFinal samples:")
+        samples = generate_samples(
+            model=model,
+            tokenizer=tokenizer,
+            device=device,
+            dtype=dtype,
+            prompts=DEFAULT_PROMPTS[: config.train.num_samples],
+            max_new_tokens=config.train.sample_max_tokens,
+            temperature=config.train.sample_temperature,
+            top_k=config.train.sample_top_k,
+        )
+        print("-" * 40)
+        for i, sample in enumerate(samples):
+            print(f"Sample {i + 1}:")
+            print(f"  Prompt: {sample['prompt']}")
+            print(f"  Generated: {sample['generated']}")
+        print("-" * 40)
+        logger.log_samples(samples, step=config.train.max_steps)
 
     # Save final checkpoint
     save_checkpoint(
@@ -643,6 +778,32 @@ def parse_args() -> argparse.Namespace:
         help="Learning rate multiplier for mHC params (default: 30.0)",
     )
 
+    # Sample generation settings
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=None,
+        help="Number of text samples to generate during evaluation (default: 3, 0 to disable)",
+    )
+    parser.add_argument(
+        "--sample-max-tokens",
+        type=int,
+        default=None,
+        help="Maximum tokens to generate per sample (default: 128)",
+    )
+    parser.add_argument(
+        "--sample-temperature",
+        type=float,
+        default=None,
+        help="Sampling temperature for generation (default: 0.8, lower = more deterministic)",
+    )
+    parser.add_argument(
+        "--sample-top-k",
+        type=int,
+        default=None,
+        help="Top-k sampling for generation (default: 50, 0 = disabled)",
+    )
+
     # Dataset settings
     parser.add_argument(
         "--dataset",
@@ -754,6 +915,16 @@ def main() -> None:
         config.train.warmup_steps = args.warmup_steps
     if args.mhc_lr_mult:
         config.train.mhc_lr_mult = args.mhc_lr_mult
+
+    # Sample generation settings
+    if args.num_samples is not None:
+        config.train.num_samples = args.num_samples
+    if args.sample_max_tokens is not None:
+        config.train.sample_max_tokens = args.sample_max_tokens
+    if args.sample_temperature is not None:
+        config.train.sample_temperature = args.sample_temperature
+    if args.sample_top_k is not None:
+        config.train.sample_top_k = args.sample_top_k
 
     # Dataset settings
     if args.dataset:

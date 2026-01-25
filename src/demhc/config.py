@@ -118,6 +118,12 @@ class TrainConfig:
     checkpoint_interval: int = 5000
     num_eval_batches: int = 50
 
+    # Sample generation during evaluation
+    num_samples: int = 3  # Number of samples to generate during evaluation
+    sample_max_tokens: int = 128  # Maximum tokens to generate per sample
+    sample_temperature: float = 0.8  # Sampling temperature (lower = more deterministic)
+    sample_top_k: int = 50  # Top-k sampling (0 = disabled)
+
     # Hardware
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
     compile: bool = True  # Use torch.compile
