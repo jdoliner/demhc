@@ -296,6 +296,7 @@ def generate_samples(
     max_new_tokens: int = 128,
     temperature: float = 0.8,
     top_k: int = 50,
+    max_seq_len: int = 512,
 ) -> list[dict[str, str]]:
     """Generate text samples from the model.
 
@@ -308,13 +309,18 @@ def generate_samples(
         max_new_tokens: Maximum number of tokens to generate
         temperature: Sampling temperature (lower = more deterministic)
         top_k: Top-k sampling (0 = disabled, use full distribution)
+        max_seq_len: Maximum sequence length the model supports
 
     Returns:
         List of dicts with 'prompt' and 'generated' keys
     """
+    was_training = model.training
     model.eval()
     prompts = prompts or DEFAULT_PROMPTS
     samples = []
+
+    # Get the actual model (handle torch.compile wrapper)
+    actual_model = model._orig_mod if hasattr(model, "_orig_mod") else model
 
     for prompt in prompts:
         # Encode prompt
@@ -324,9 +330,13 @@ def generate_samples(
         generated_ids = input_ids.clone()
 
         for _ in range(max_new_tokens):
-            # Forward pass
+            # Check if we've exceeded max sequence length
+            if generated_ids.shape[1] >= max_seq_len:
+                break
+
+            # Forward pass - use actual_model to avoid torch.compile issues with varying seq lens
             with torch.autocast(device_type="cuda", dtype=dtype):
-                logits = model(generated_ids)
+                logits = actual_model(generated_ids)
 
             # Get logits for the last token
             next_token_logits = logits[:, -1, :] / temperature
@@ -357,7 +367,8 @@ def generate_samples(
 
         samples.append({"prompt": prompt, "generated": continuation})
 
-    model.train()
+    if was_training:
+        model.train()
     return samples
 
 
@@ -532,28 +543,40 @@ def train(config: ExperimentConfig, resume: str | None = None) -> None:
 
             # Generate and log samples
             if config.train.num_samples > 0:
-                print("Generating samples...")
-                samples = generate_samples(
-                    model=model,
-                    tokenizer=tokenizer,
-                    device=device,
-                    dtype=dtype,
-                    prompts=DEFAULT_PROMPTS[: config.train.num_samples],
-                    max_new_tokens=config.train.sample_max_tokens,
-                    temperature=config.train.sample_temperature,
-                    top_k=config.train.sample_top_k,
-                )
+                print(f"Generating {config.train.num_samples} samples...", flush=True)
+                try:
+                    samples = generate_samples(
+                        model=model,
+                        tokenizer=tokenizer,
+                        device=device,
+                        dtype=dtype,
+                        prompts=DEFAULT_PROMPTS[: config.train.num_samples],
+                        max_new_tokens=config.train.sample_max_tokens,
+                        temperature=config.train.sample_temperature,
+                        top_k=config.train.sample_top_k,
+                        max_seq_len=config.model.max_seq_len,
+                    )
+                    print(f"Generated {len(samples)} samples", flush=True)
 
-                # Print samples to terminal
-                print("-" * 40)
-                for i, sample in enumerate(samples):
-                    print(f"Sample {i + 1}:")
-                    print(f"  Prompt: {sample['prompt']}")
-                    print(f"  Generated: {sample['generated'][:200]}...")
-                print("-" * 40)
+                    # Print samples to terminal
+                    print("-" * 40, flush=True)
+                    for i, sample in enumerate(samples):
+                        print(f"Sample {i + 1}:", flush=True)
+                        print(f"  Prompt: {sample['prompt']}", flush=True)
+                        generated_preview = (
+                            sample["generated"][:200] if sample["generated"] else "(empty)"
+                        )
+                        print(f"  Generated: {generated_preview}...", flush=True)
+                    print("-" * 40, flush=True)
 
-                # Log to TensorBoard
-                logger.log_samples(samples, step=step)
+                    # Log to TensorBoard
+                    logger.log_samples(samples, step=step)
+                    logger.flush()
+                except Exception as e:
+                    print(f"Error generating samples: {e}", flush=True)
+                    import traceback
+
+                    traceback.print_exc()
 
             # Log mHC stats for DEQ model
             if isinstance(model, DEQmHCModel) or (
@@ -586,24 +609,31 @@ def train(config: ExperimentConfig, resume: str | None = None) -> None:
 
     # Generate final samples
     if config.train.num_samples > 0:
-        print("\nFinal samples:")
-        samples = generate_samples(
-            model=model,
-            tokenizer=tokenizer,
-            device=device,
-            dtype=dtype,
-            prompts=DEFAULT_PROMPTS[: config.train.num_samples],
-            max_new_tokens=config.train.sample_max_tokens,
-            temperature=config.train.sample_temperature,
-            top_k=config.train.sample_top_k,
-        )
-        print("-" * 40)
-        for i, sample in enumerate(samples):
-            print(f"Sample {i + 1}:")
-            print(f"  Prompt: {sample['prompt']}")
-            print(f"  Generated: {sample['generated']}")
-        print("-" * 40)
-        logger.log_samples(samples, step=config.train.max_steps)
+        print("\nFinal samples:", flush=True)
+        try:
+            samples = generate_samples(
+                model=model,
+                tokenizer=tokenizer,
+                device=device,
+                dtype=dtype,
+                prompts=DEFAULT_PROMPTS[: config.train.num_samples],
+                max_new_tokens=config.train.sample_max_tokens,
+                temperature=config.train.sample_temperature,
+                top_k=config.train.sample_top_k,
+                max_seq_len=config.model.max_seq_len,
+            )
+            print("-" * 40, flush=True)
+            for i, sample in enumerate(samples):
+                print(f"Sample {i + 1}:", flush=True)
+                print(f"  Prompt: {sample['prompt']}", flush=True)
+                print(f"  Generated: {sample['generated']}", flush=True)
+            print("-" * 40, flush=True)
+            logger.log_samples(samples, step=config.train.max_steps)
+        except Exception as e:
+            print(f"Error generating final samples: {e}", flush=True)
+            import traceback
+
+            traceback.print_exc()
 
     # Save final checkpoint
     save_checkpoint(
