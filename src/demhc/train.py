@@ -280,9 +280,12 @@ def evaluate(
 
 # Default prompts for sample generation
 DEFAULT_PROMPTS = [
-    "Once upon a time",
-    "The little girl",
-    "One day, a",
+    "We present a",
+    "The Bernoulli Effect is",
+    "There is a classic result in mathematics that states",
+    "The human brain is capable of",
+    "The complexity of algorithms can be analyzed by",
+    "The cellular structure of plants differs from that of animals in that",
 ]
 
 
